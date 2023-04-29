@@ -1,0 +1,245 @@
+import time
+import socket
+import datetime
+import mysql.connector
+import sys
+import tkinter as tk
+from tkinter import simpledialog
+import matplotlib.pyplot as plt
+from tkinter import ttk
+from tkinter import messagebox
+from Offset import calculate_averages
+
+# MySQL-Datenbankverbindung herstellen
+def connect_to_db():
+    db = mysql.connector.connect(
+        host="localhost",
+        user="kester",
+        password="1234567",
+        database="s_sensor"
+    )
+    return db
+
+db = connect_to_db()
+cursor = db.cursor()
+
+
+# Haupt-GUI-Klasse
+class SensorDataGUI:
+    def __init__(self, root):
+        self.client = None
+        self.root = root
+        self.root.title("Sensor Data GUI")
+
+        self.frame = ttk.Frame(self.root, padding="10")
+        self.frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # Verbindung zum Sensor-Button
+        self.connect_button = ttk.Button(self.frame, text="Verbindung zum Sensor herstellen", command=self.connect_to_sensor)
+        self.connect_button.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=5, pady=5)
+
+        # Eingabe für Tabellennamen
+        self.table_name_label = ttk.Label(self.frame, text="Tabellenname eingeben:")
+        self.table_name_label.grid(row=1, column=0, sticky=(tk.W), padx=5, pady=5)
+
+        self.table_name_entry = ttk.Entry(self.frame)
+        self.table_name_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=5, pady=5)
+
+        # Datenempfang starten-Button
+        self.start_button = ttk.Button(self.frame, text="Datenempfang starten", command=self.start_data_collection)
+        self.start_button.grid(row=2, column=0, sticky=(tk.W, tk.E), padx=5, pady=5)
+
+        # Fortschrittsanzeige
+        self.progress_label = ttk.Label(self.frame, text="Fortschritt:")
+        self.progress_label.grid(row=3, column=0, sticky=(tk.W), padx=5, pady=5)
+
+        self.progress_bar = ttk.Progressbar(self.frame, orient="horizontal", length=200, mode="determinate")
+        self.progress_bar.grid(row=3, column=1, sticky=(tk.W, tk.E), padx=5, pady=5)
+
+        # Graph anzeigen-Button
+        self.graph_button = ttk.Button(self.frame, text="Graph anzeigen", command=self.show_data_graph)
+        self.graph_button.grid(row=4, column=0, sticky=(tk.W, tk.E), padx=5, pady=5)
+
+    def connect_to_sensor(self):
+        self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_address = ("127.0.0.1", 1234)
+        try:
+            self.client.connect(server_address)
+            messagebox.showinfo("Erfolg", "Verbindung zum Sensor hergestellt.")
+        except socket.error as e:
+            messagebox.showerror("Fehler", f"Fehler beim Verbinden zum Server: {e}")
+
+        self.start_data_collection()
+
+        pass
+
+    def start_data_collection(self):
+        if not self.client:  # Fügen Sie diese Bedingung hinzu
+            messagebox.showerror("Fehler", "Bitte stellen Sie zuerst eine Verbindung zum Sensor her.")
+            return
+
+        def create_new_table(table_name):
+            try:
+                cursor = db.cursor()
+                sql = f"CREATE TABLE {table_name} (Timestamp datetime, Sensor char(10), "
+                sql += f"Temperature double, AccX double, AccY double, AccZ double, "
+                sql += f"GyroX double, GyroY double, GyroZ double, MagnX double, MagnY double, MagnZ char(20))"
+                cursor.execute(sql)
+                print("Tabelle erfolgreich angelegt")
+
+            except mysql.connector.Error as error:
+                print(f"Fehler beim Erstellen der Tabelle: {error}")
+
+        # Hilfsfunktion für das Einfügen von Daten in eine Tabelle
+        def insert_data(table_name, timestamp, sensor_data):
+            try:
+                cursor = db.cursor()
+                query = f"INSERT INTO {table_name} (Timestamp, Sensor, Temperature, "
+                query += f"AccX, AccY, AccZ, GyroX, GyroY, GyroZ, MagnX, MagnY, MagnZ) "
+                query += f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                values = (timestamp,) + tuple(sensor_data)
+                cursor.execute(query, values)
+                db.commit()
+
+            except mysql.connector.Error as error:
+                print(f"Fehler beim Einfügen von Daten: {error}")
+
+        averages = calculate_averages()
+        # Unbekannte Faktoren
+        factors = [-16384, -16384, -16384, 32.8, 32.8, 32.8, 1, 1, 1]
+
+        def apply_factors(values):
+            return [value / factor for value, factor in zip(values, factors)]
+
+        def subtract_averages(values):
+            return [value - average for value, average in zip(values, averages)]
+
+
+            # Name der Tabelle vom Benutzer eingeben lassen
+            table_name = self.table_name_entry.get()
+            if not table_name:
+                messagebox.showerror("Fehler", "Bitte geben Sie einen Tabellennamen ein.")
+                return
+
+            # Startzeit des Programms
+            start_time = time.time()
+
+            # Anzahl der empfangenen Strings
+            received_strings = 0
+            # Neue Tabelle in der MySQL-Datenbank erstellen
+
+            create_new_table(table_name)
+
+            # Daten vom Server empfangen und in der MySQL-Datenbank speichern
+            while received_strings < 300:
+                # Empfangene Daten verarbeiten
+                message = self.client.recv(1024).decode()
+                if message:
+                    received_strings += 1
+                    sensor_data = message.split(",")
+
+                    # Unbekannte Faktoren anwenden
+                    numeric_values = list(map(float, sensor_data[1:]))
+                    adjusted_values = apply_factors(numeric_values)
+
+                    # Mittelwerte subtrahieren
+                    final_values = subtract_averages(adjusted_values)
+
+                    # Sensor-Daten und berechnete Werte kombinieren
+                    final_data = [sensor_data[0]] + final_values
+                    timestamp = datetime.datetime.now()
+                    insert_data(table_name, timestamp, final_data)
+
+                    # Timer anzeigen
+                    elapsed_time = time.time() - start_time
+                    sys.stdout.write(f"\rZeit seit Erhalt des ersten Strings: {elapsed_time:.2f} Sekunden")
+                    sys.stdout.flush()
+
+                else:
+                    print("Keine neuen Daten empfangen. Das Programm wird beendet.")
+                    break
+
+            # Schließe die Verbindung nach dem Empfang von 300 Strings
+            client.close()
+
+            if received_strings == 300:
+                print("\nDaten erfolgreich eingefügt")
+        pass
+
+    def show_data_graph(self):
+        cursor = db.cursor()
+
+        # Frag den Benutzer nach dem Tabellennamen
+        table_name = simpledialog.askstring("Tabellenname", "Bitte geben Sie den Tabellennamen ein:")
+
+        if table_name is None or table_name.strip() == "":
+            messagebox.showerror("Fehler", "Bitte geben Sie einen gültigen Tabellennamen ein.")
+            return
+
+        # Abfrage, um Daten aus der ausgewählten Tabelle abzurufen
+        query = f"SELECT Timestamp, Temperature, AccX, AccY, AccZ, GyroX, GyroY, GyroZ, MagnX, MagnY, MagnZ FROM {table_name}"
+        cursor.execute(query)
+        data = cursor.fetchall()
+
+        if len(data) == 0:
+            messagebox.showerror("Fehler", "Die Tabelle enthält keine Daten.")
+            return
+
+        # Auswahlmenü für den darzustellenden Wert
+        value_options = [
+            ("Temperature", "Temperature"),
+            ("AccX", "AccX (g)"),
+            ("AccY", "AccY (g)"),
+            ("AccZ", "AccZ (g)"),
+            ("GyroX", "GyroX (°/s)"),
+            ("GyroY", "GyroY (°/s)"),
+            ("GyroZ", "GyroZ (°/s)"),
+            ("MagnX", "MagnX (10^-6 T)"),
+            ("MagnY", "MagnY (10^-6 T)"),
+            ("MagnZ", "MagnZ (10^-6 T)")
+        ]
+
+        def ask_value(self, root):  # Fügen Sie das Argument self hinzu
+            dlg = simpledialog.Dialog(root, title="Wert auswählen")
+            ttk.Label(dlg, text="Bitte wählen Sie den darzustellenden Wert aus:").grid(row=0, column=0, padx=5, pady=5)
+            value_var = tk.StringVar(dlg, value=value_options[0][0])
+            value_dropdown = ttk.Combobox(dlg, textvariable=value_var, values=[v[0] for v in value_options],
+                                          state="readonly")
+            value_dropdown.grid(row=0, column=1, padx=5, pady=5)
+            dlg.ok_button = ttk.Button(dlg, text="OK", command=dlg.ok)
+            dlg.ok_button.grid(row=1, column=0, columnspan=2, pady=5)
+            dlg.protocol("WM_DELETE_WINDOW", dlg.cancel)
+            dlg.bind("<Escape>", lambda *ignore: dlg.cancel())
+            dlg.wait_window()
+            return value_var.get() if dlg.result else None
+
+        selected_value = self.ask_value(self.root)
+
+        if selected_value is None or selected_value.strip() == "":
+            messagebox.showerror("Fehler", "Bitte wählen Sie einen gültigen Wert aus.")
+            return
+
+        # Daten extrahieren und plotten
+        timestamps = [row[0] for row in data]
+        value_index = [v[0] for v in value_options].index(selected_value)
+        values = [row[value_index + 1] for row in data]
+
+        plt.plot(timestamps, values, marker="o")
+        plt.xlabel("Zeit")
+        plt.ylabel(value_options[value_index][1])
+        plt.title(f"{value_options[value_index][1]} Verlauf")
+        plt.grid()
+
+        # Diagramm anzeigen
+        plt.show()
+
+        # Ressourcen freigeben
+        cursor.close()
+        db.close()
+        pass
+
+# Hauptprogramm
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SensorDataGUI(root)
+    root.mainloop()
